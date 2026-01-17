@@ -19,32 +19,31 @@ else:
 # --- 2. 核心分析類別 ---
 class TaiwanStockMonitor2026:
     def __init__(self, token):
+        self.api = DataLoader()
+        
         # 建立側邊欄診斷區
         with st.sidebar.expander("🛠️ 系統診斷資訊", expanded=True):
-            if not token:
-                st.error("❌ Token 為空值")
-                self.login_status = False
-            else:
-                st.write(f"🔑 Token 前綴: `{token[:6]}...`")
-                self.login_status = True
-
+            st.write(f"🔑 Token 前綴: `{token[:10]}...`")
             import FinMind
             st.write(f"📦 FinMind 版本: `{FinMind.__version__}`")
             
-            self.api = DataLoader()
-            
-            # 自動偵測登入指令相容性
+            # 直接嘗試登入，不進行 hasattr 檢查
+            login_success = False
             try:
-                if hasattr(self.api, 'login'):
-                    self.api.login(token=token)
-                    st.success("✅ 成功呼叫 login")
-                elif hasattr(self.api, 'login_token'):
+                # 嘗試新版標準指令
+                self.api.login(token=token)
+                st.success("✅ 指令 `login` 執行成功")
+                login_success = True
+            except Exception as e1:
+                try:
+                    # 嘗試舊版指令
                     self.api.login_token(token=token)
-                    st.success("✅ 成功呼叫 login_token")
-                else:
-                    st.warning("⚠️ 找不到登入指令")
-            except Exception as e:
-                st.error(f"❌ 登入報錯: {e}")
+                    st.success("✅ 指令 `login_token` 執行成功")
+                    login_success = True
+                except Exception as e2:
+                    st.warning(f"⚠️ 登入嘗試失敗 (可能為匿名模式)")
+            
+            self.login_status = login_success
 
     @st.cache_data(ttl=3600)
     def get_full_analysis_data(_self, stock_id, days=60):
@@ -62,10 +61,13 @@ class TaiwanStockMonitor2026:
                 data_id=stock_id,
                 start_date=start_date
             )
-            df_foreign = df_chip[df_chip['name'] == 'Foreign_Investor'].copy()
+            # 修正：部分版本回傳名稱可能不同，這裡做相容處理
+            df_foreign = df_chip[df_chip['name'].str.contains('Foreign', case=False, na=False)].copy()
             df_foreign['date'] = pd.to_datetime(df_foreign['date'])
             df_foreign = df_foreign.set_index('date')
-        except Exception:
+        except Exception as e:
+            # 偵錯用：若籌碼抓取失敗顯示原因
+            # st.sidebar.write(f"籌碼抓取失敗: {e}")
             return df_price
 
         # C. 計算成本線
@@ -144,8 +146,8 @@ with st.spinner("正在對接 FinMind 獲取籌碼..."):
         
         st.info(f"💡 目前乖離率：**{bias:.2f}%** (外資加權成本: {f_cost:.2f})")
     else:
-        st.warning("⚠️ 籌碼數據載入中或 Token 權限不足，目前僅顯示價格。")
+        st.warning("⚠️ 籌碼數據載入中，或目前為週末/非交易時段。")
 
 # C. 布局策略
 st.divider()
-st.success(f"📅 2026 年度戰略：當前月份建議執行 {datetime.now().month} 月份佈局計劃。")
+st.success(f"📅 2026 年度戰略：當前為 {datetime.now().month} 月份，建議檢視 Q{(datetime.now().month-1)//3 + 1} 佈局計劃。")

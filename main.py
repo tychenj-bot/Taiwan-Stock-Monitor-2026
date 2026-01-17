@@ -21,11 +21,16 @@ class TaiwanStockMonitor2026:
     def __init__(self, token):
         # 初始化 FinMind 載入器
         self.api = DataLoader()
-        # 修正：FinMind 新版 API 登入指令為 login
+        # 兼容性登入邏輯：解決 'DataLoader' object has no attribute 'login' 報錯
         try:
-            self.api.login(token=token)
+            if hasattr(self.api, 'login'):
+                self.api.login(token=token)
+            elif hasattr(self.api, 'login_token'):
+                self.api.login_token(token=token)
+            else:
+                st.info("💡 偵測到匿名模式或版本差異，嘗試繼續抓取。")
         except Exception as e:
-            st.error(f"FinMind 登入失敗：{e}")
+            st.warning(f"登入時發生小提示：{e}")
 
     @st.cache_data(ttl=3600) # 快取數據 1 小時，避免頻繁請求 API
     def get_full_analysis_data(_self, stock_id, days=60):
@@ -48,18 +53,18 @@ class TaiwanStockMonitor2026:
             df_foreign['date'] = pd.to_datetime(df_foreign['date'])
             df_foreign = df_foreign.set_index('date')
         except Exception:
-            # 若籌碼抓取失敗，回傳純價格數據以維持運作
+            # 若籌碼抓取失敗，回傳純價格數據以維持基本功能
             return df_price
 
         # C. 合併並計算外資成本線
-        # 核心公式：僅計算外資「買超日」的加權平均價格
+        # 核心邏輯：僅計算外資「買超日」的加權平均價格
         combined = pd.concat([df_price, df_foreign[['net_buy']]], axis=1).dropna(subset=['Close'])
         
         def get_weighted_cost(window_df):
             buys = window_df[window_df['net_buy'] > 0]
             if buys.empty: 
                 return np.nan
-            # 加權平均公式: (價格 * 買超張數) / 總買超張數
+            # 加權平均公式
             return (buys['Close'] * buys['net_buy']).sum() / buys['net_buy'].sum()
 
         costs = []
@@ -99,7 +104,7 @@ st.markdown("---")
 
 # 側邊欄：標的選擇
 stock_options = {
-    "台積電 (TSMC)": "2330",
+    "台積電 (2330)": "2330",
     "元大台灣50 (0050)": "0050",
     "富邦台50 (006208)": "006208",
     "國泰領袖50 (00922)": "00922",
@@ -126,6 +131,9 @@ with c3:
 # B. 籌碼深度分析區
 st.divider()
 st.subheader("📊 外資加權成本線 (籌碼防線分析)")
+
+# 外資加權平均成本公式說明
+st.latex(r"Foreign\ Cost = \frac{\sum (Price_{buy} \times Net\ Buy_{buy})}{\sum Net\ Buy_{buy}}")
 
 with st.spinner("正在對接 FinMind 獲取法人籌碼..."):
     df = monitor.get_full_analysis_data(target_id)

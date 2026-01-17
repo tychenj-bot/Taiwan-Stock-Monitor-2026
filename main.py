@@ -130,4 +130,18 @@ if not df.empty:
     # --- 5. 圖表可視化 ---
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df.index, y=df['Close'], name="股價", line=dict(color='#1f77b4', width=3)))
-    fig.add_trace(go.Scatter
+    fig.add_trace(go.Scatter(x=df.index, y=df['Foreign_Cost'], name="外資成本防線", line=dict(color='#d62728', dash='dot')))
+    
+    # 標註燈號背景顏色
+    fig.add_hrect(y0=f_cost*0.98, y1=f_cost*1.02, line_width=0, fillcolor="green", opacity=0.1, annotation_text="佈局區")
+    
+    fig.update_layout(template="plotly_dark", height=550, title=f"{stock_name} ({stock_id}) 籌碼戰略圖", hovermode="x unified")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 投信籌碼監控
+    st.subheader("🏢 投信(內資)同步監控")
+    fig_it = go.Bar(x=df.index[-30:], y=df['it_net'].iloc[-30:], name="投信買賣超", marker_color='orange')
+    st.plotly_chart(go.Figure(data=[fig_it], layout=dict(template="plotly_dark", height=300)), use_container_width=True)
+
+st.divider()
+st.caption("2026 監控警語：本系統燈號僅供技術參考。ADR 溢價計算受匯率波動影響，實際執行請參考即時匯率。")

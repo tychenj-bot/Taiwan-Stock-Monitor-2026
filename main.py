@@ -7,7 +7,7 @@ from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 
 # --- 1. 系統環境配置 ---
-st.set_page_config(page_title="2026 三引擎戰略系統 v6.5 (開盤決斷版)", layout="wide")
+st.set_page_config(page_title="2026 三引擎戰略系統 v6.6", layout="wide")
 
 if "FINMIND_TOKEN" not in st.secrets:
     st.error("❌ 找不到 FINMIND_TOKEN，請檢查 Secrets 設定。")
@@ -45,7 +45,6 @@ class TaiwanStockMonitor2026:
 
     @st.cache_data(ttl=3600)
     def get_strategic_data(_self, stock_id, days=150):
-        # A. 歷史數據 (yfinance)
         ticker_yf = f"{stock_id}.TW"
         df = yf.Ticker(ticker_yf).history(period=f"{days}d")
         
@@ -59,9 +58,9 @@ class TaiwanStockMonitor2026:
         df['RSV'] = (df['Close'] - low_min) / (high_max - low_min) * 100
         df['K'] = df['RSV'].ewm(com=2).mean()
         
-        # 20日均量 (用於計算開盤量比)
         vol_ma20 = df['Volume'].rolling(20).mean()
         avg_vol = vol_ma20.iloc[-1]
+        df['Vol_Ratio'] = df['Volume'] / vol_ma20
 
         # 殖利率
         try:
@@ -77,7 +76,7 @@ class TaiwanStockMonitor2026:
         mkt.index = mkt.index.tz_localize(None).normalize()
         df['RS_Index'] = (df['Close'].pct_change(20) - mkt['Close'].pct_change(20)) * 100
 
-        # B. 籌碼數據 (FinMind)
+        # 籌碼數據
         start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
         try:
             df_chip = _self.api.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start_date)
@@ -93,7 +92,7 @@ class TaiwanStockMonitor2026:
         df = df.fillna(0)
         df['Concentration'] = (df['foreign_net'] + df['investment_net']) / df['Volume'] * 100
 
-        # C. 智慧成本線
+        # 智慧成本線
         def calculate_vwap_safe(net_buy_col):
             costs = []
             last_valid = np.nan
@@ -134,25 +133,53 @@ class TaiwanStockMonitor2026:
         
         return df, consecutive, est_yield, used_source, df['K'].iloc[-1], df['Concentration'].iloc[-1], avg_vol
 
-    # 新增：即時開盤數據抓取 (不透過 Cache，確保 09:05 是最新的)
     def get_realtime_open(self, stock_id):
         try:
             info = yf.Ticker(f"{stock_id}.TW").fast_info
-            # 嘗試獲取今日開盤價，若盤前可能為 None
             open_p = info.open if info.open else info.last_price
             last_p = info.last_price
-            # 簡易估算當日量 (若盤中則直接用 last_volume，開盤初期需自行判斷)
             curr_vol = info.last_volume 
             return open_p, last_p, curr_vol
         except:
             return 0, 0, 0
 
 # --- 3. UI 介面 ---
-st.title("🦅 2026 三引擎戰略系統 v6.5 (開盤決斷版)")
-
+st.title("🦅 2026 三引擎戰略系統 v6.6")
 monitor = TaiwanStockMonitor2026(FINMIND_TOKEN)
 
-# ADR 儀表板
+# --- A. 側邊欄：戰略地圖 (New!) ---
+st.sidebar.header("🔍 監控台 & 戰略圖")
+
+# 標的選擇
+targets = {
+    "🔥 引擎一：成長進攻": {"台積電 (2330)": "2330", "中信上游半導體 (00991A)": "00991A", "統一主動 (00981A)": "00981A", "群益精選 (00982A)": "00982A", "復華好收益 (00980A)": "00980A"},
+    "🛡️ 引擎二：市值防禦": {"元大台灣50 (0050)": "0050", "富邦台50 (006208)": "006208", "國泰領袖50 (00922)": "00922"},
+    "💰 引擎三：穩健領息": {"元大高股息 (0056)": "0056", "國泰永續高股息 (00878)": "00878", "群益台灣精選高息 (00919)": "00919", "復華台灣科技優息 (00929)": "00929"}
+}
+c_cat = st.sidebar.selectbox("引擎分類", list(targets.keys()))
+c_name = st.sidebar.selectbox("監控標的", list(targets[c_cat].keys()))
+stock_id = targets[c_cat][c_name]
+
+st.sidebar.markdown("---")
+
+# 季度戰略摺疊選單 (移至此處)
+with st.sidebar.expander("🗺️ 2026 戰略佈局 (操作手冊)", expanded=False):
+    st.markdown("### 💰 資金配置黃金比例")
+    st.info("""
+    * **核心 (50%)**: 🛡️ 市值型 (0050/006208)
+    * **攻擊 (30%)**: 🔥 成長型 (2330/00991A)
+    * **現金 (20%)**: 💰 高息型 (00878/00919)
+    """)
+    st.markdown("### 📅 季度戰術")
+    st.markdown("""
+    * **Q1 (設備先行)**: 關注 00991A，利用 ADR 錯殺佈局。
+    * **Q2 (防禦避險)**: 減碼攻擊部位，轉進高息與市值型。
+    * **Q3 (旺季攻擊)**: 蘋果/AI旺季，加碼主動型 ETF。
+    * **Q4 (汰弱留強)**: 檢視 RS 指標，落後者回流 0050。
+    """)
+    st.warning("⚠️ **最高指導原則**：ADR 溢價率決定多空，成本線決定進出。")
+
+# --- B. 主畫面：ADR 儀表板 ---
 st.markdown("### 🌎 全球戰略風向 (TSM ADR)")
 adr_premium, adr_price = monitor.get_global_tsm_signal()
 c_m, c_i = st.columns([1, 2])
@@ -166,114 +193,86 @@ with c_i:
 
 st.divider()
 
-# 標的選擇
-targets = {
-    "🔥 引擎一：成長進攻": {"台積電 (2330)": "2330", "中信上游半導體 (00991A)": "00991A", "統一主動 (00981A)": "00981A", "群益精選 (00982A)": "00982A", "復華好收益 (00980A)": "00980A"},
-    "🛡️ 引擎二：市值防禦": {"元大台灣50 (0050)": "0050", "富邦台50 (006208)": "006208", "國泰領袖50 (00922)": "00922"},
-    "💰 引擎三：穩健領息": {"元大高股息 (0056)": "0056", "國泰永續高股息 (00878)": "00878", "群益台灣精選高息 (00919)": "00919", "復華台灣科技優息 (00929)": "00929"}
-}
-
-c1, c2 = st.columns(2)
-with c1: cat = st.selectbox("引擎分類", list(targets.keys()))
-with c2: name = st.selectbox("監控標的", list(targets[cat].keys()))
-stock_id = targets[cat][name]
-
+# --- C. 核心運算 ---
 df, con_days, yield_rate, source_name, k_val, conc_val, avg_vol_20 = monitor.get_strategic_data(stock_id)
 
 if not df.empty:
     latest = df.iloc[-1]
     
-    # 決定成本線
-    is_high_div = "高股息" in cat or "穩健領息" in cat
+    is_high_div = "高股息" in c_cat or "穩健領息" in c_cat
     if is_high_div and "投信" in source_name: main_cost = latest['Invest_Cost']; cost_label = "投信成本"
     elif is_high_div: main_cost = latest['Foreign_Cost']; cost_label = "外資成本 (備援)"
     else: main_cost = latest['Foreign_Cost']; cost_label = "外資成本"
 
     bias = (latest['Close'] / main_cost - 1) * 100
-    
-    # 獲取即時開盤數據 (09:05 用)
     real_open, real_last, real_vol = monitor.get_realtime_open(stock_id)
-    # 預估量比 (簡單推估：若現在是 09:30，量已達均量 30%，全天可能爆量。此處使用即時量/20日均量作為參考)
-    # 實戰中：開盤 15 分鐘量 > 20日均量 * 0.15 視為有量
     real_vol_ratio = real_vol / avg_vol_20 
     
-    # --- 三大時段戰略看板 (晚 -> 夜 -> 早) ---
-    tab1, tab2, tab3 = st.tabs(["📊 15:30 盤後篩選", "🌌 22:30 深夜校正", "☀️ 09:05 開盤執行"])
+    # --- 三大時段戰略看板 ---
+    tab1, tab2, tab3 = st.tabs(["📊 15:30 盤後分析 (含RS)", "🌌 22:30 深夜校正", "☀️ 09:05 開盤執行"])
 
     with tab1:
         st.subheader("分析期：尋找「準買入名單」")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric(f"防線: {cost_label}", f"${main_cost:.1f}")
         c2.metric("籌碼乖離", f"{bias:.2f}%", delta="安全" if bias < 5 else "過熱", delta_color="inverse")
-        
         con_label = f"連買 {con_days} 天" if con_days > 0 else f"連賣 {abs(con_days)} 天"
-        con_color = "normal" if con_days > 0 else "inverse"
-        c3.metric("主力連續動向", con_label, delta="主力進場" if con_days>=3 else "主力撤退", delta_color=con_color)
-        c4.metric("籌碼集中度", f"{conc_val:.2f}%", delta="大戶收貨" if conc_val > 0 else "散戶接刀")
+        c3.metric("主力連續動向", con_label, delta="主力進場" if con_days>=3 else "主力撤退", delta_color="normal" if con_days>0 else "inverse")
+        c4.metric("RS 強度 (vs 0050)", f"{latest['RS_Index']:.2f}", delta="強勢" if latest['RS_Index']>0 else "弱勢")
         
-        # 核心圖表
+        # 整合圖表：價格+成本 & RS 指標
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index[-60:], y=df['Close'].iloc[-60:], name="股價", line=dict(color='#1f77b4', width=3)))
         line_col = '#ff7f0e' if is_high_div else '#d62728'
         cost_series = df['Invest_Cost'] if is_high_div else df['Foreign_Cost']
         fig.add_trace(go.Scatter(x=df.index[-60:], y=cost_series.iloc[-60:], name=cost_label, line=dict(color=line_col, dash='dot')))
-        fig.update_layout(template="plotly_dark", height=350, margin=dict(t=30, b=20))
+        fig.update_layout(template="plotly_dark", height=350, margin=dict(t=30, b=20), title="價格 vs 主力成本線")
         st.plotly_chart(fig, use_container_width=True)
+        
+        # RS 圖表 (從原 Tab 3 移來)
+        fig_rs = go.Figure()
+        fig_rs.add_trace(go.Scatter(x=df.index[-90:], y=df['RS_Index'].iloc[-90:], fill='tozeroy', name="RS Index", line=dict(color='yellow')))
+        fig_rs.add_hline(y=0, line_dash="dash", line_color="white")
+        fig_rs.update_layout(template="plotly_dark", height=200, margin=dict(t=30, b=20), title="RS 相對強度 (正值=強於大盤)")
+        st.plotly_chart(fig_rs, use_container_width=True)
 
     with tab2:
         st.subheader("校正期：ADR 避險監控")
         k1, k2, k3 = st.columns(3)
         k1.metric("ADR 溢價率", f"{adr_premium:.2f}%")
         k2.metric("KD 位階", f"{k_val:.0f}", help="<20 超賣, >80 過熱")
-        k3.metric("RS 強度", f"{latest['RS_Index']:.2f}", help=">0 強於 0050")
+        k3.metric("籌碼集中度", f"{conc_val:.2f}%", delta="收貨" if conc_val > 0 else "散貨")
         
         if adr_premium < -1 and con_days > 0:
             st.success("💎 **校正訊號**：ADR 跌 + 台股主力買。明日開低為「黃金買點」。")
         elif adr_premium > 5:
             st.warning("🔥 **過熱訊號**：ADR 溢價過大，明日開高容易拉回，切勿追價。")
         else:
-            st.info("⚪ **中性訊號**：無特殊國際盤影響，回歸 Tab 3 開盤條件判斷。")
+            st.info("⚪ **中性訊號**：無特殊國際盤影響，回歸開盤條件判斷。")
 
     with tab3:
         st.subheader("決斷期：09:05 執行指令")
-        
-        # 顯示即時數據
         m1, m2, m3 = st.columns(3)
         m1.metric("1. 今日開盤價", f"${real_open:.2f}")
-        m2.metric("2. 主力防線 (成本)", f"${main_cost:.1f}")
-        m3.metric("3. 即時量比 (Vol Ratio)", f"{real_vol_ratio:.2f}", help="數值持續上升代表有量")
+        m2.metric("2. 主力防線", f"${main_cost:.1f}")
+        m3.metric("3. 即時量比", f"{real_vol_ratio:.2f}", help="數值持續上升代表有量")
 
         st.markdown("---")
         st.markdown("#### ⚔️ 交易執行腳本")
-        
-        # 條件判斷邏輯
-        cond_price = real_open > main_cost # 條件1: 開在成本之上
-        cond_vol = real_vol_ratio > 0.1 # 條件2: 開盤有量 (09:05 若達日均量 10% 算不錯)
-        # 註：這裡的 0.1 是開盤瞬間的經驗值，若盤中請調整為 > 1.0
-        
-        if cond_price:
-            st.success(f"✅ **條件 A (價) 符合**：開盤價 (${real_open}) 守在 {cost_label} 之上。")
-        else:
-            st.error(f"❌ **條件 A (價) 破局**：開盤跌破 {cost_label}，防線失守。")
-
-        if cond_vol: # 僅作提示，非絕對
-            st.info(f"ℹ️ **條件 B (量) 觀察**：開盤量能正常。請持續觀察量比是否放大至 > 1.0。")
-        
-        # 最終指令輸出 (LaTeX 格式)
-        st.markdown("##### 📢 系統建議：")
+        cond_price = real_open > main_cost 
+        cond_vol = real_vol_ratio > 0.1 
         
         if cond_price:
             st.markdown(r"""
-            > **符合進場條件** $\rightarrow$ **果斷買進 (分批 3 筆)**
-            > * 第一筆：開盤確認支撐後。
-            > * 第二筆：盤中突破早盤高點時。
-            > * 第三筆：尾盤確認收紅時。
+            > ✅ **符合進場條件** $\rightarrow$ **果斷買進 (分批 3 筆)**
+            > * 開盤守穩成本線，多方控盤。
+            > * 建議：開盤/突破/尾盤 分批佈局。
             """)
         else:
             st.markdown(r"""
-            > **跌破成本線或量能急凍** $\rightarrow$ **取消交易，觀望**
-            > * 目前股價由主力防線之下開出，多方棄守。
-            > * 建議：等待股價重新站回成本線且量能放大後再重新評估。
+            > 🛑 **取消交易，觀望**
+            > * 跌破成本線，防線失守。
+            > * 建議：等待站回成本線且量能放大。
             """)
 
-st.caption("v6.5 最終版：依據 09:05 即時開盤價與成本線乖離，自動生成進出場指令。")
+st.caption("v6.6 側欄戰略版：操作心法常駐側邊，分析流程整合 RS 指標。")

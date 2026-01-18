@@ -7,7 +7,7 @@ from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 
 # --- 1. 系統環境配置 ---
-st.set_page_config(page_title="2026 三引擎戰略系統 v6.6", layout="wide")
+st.set_page_config(page_title="2026 三引擎戰略系統 v6.7", layout="wide")
 
 if "FINMIND_TOKEN" not in st.secrets:
     st.error("❌ 找不到 FINMIND_TOKEN，請檢查 Secrets 設定。")
@@ -144,11 +144,11 @@ class TaiwanStockMonitor2026:
             return 0, 0, 0
 
 # --- 3. UI 介面 ---
-st.title("🦅 2026 三引擎戰略系統 v6.6")
+st.title("🦅 2026 三引擎戰略系統 v6.7")
 monitor = TaiwanStockMonitor2026(FINMIND_TOKEN)
 
-# --- A. 側邊欄：戰略地圖 (New!) ---
-st.sidebar.header("🔍 監控台 & 戰略圖")
+# --- A. 側邊欄：戰略 & SOP ---
+st.sidebar.header("🔍 監控台")
 
 # 標的選擇
 targets = {
@@ -160,24 +160,37 @@ c_cat = st.sidebar.selectbox("引擎分類", list(targets.keys()))
 c_name = st.sidebar.selectbox("監控標的", list(targets[c_cat].keys()))
 stock_id = targets[c_cat][c_name]
 
-st.sidebar.markdown("---")
+st.sidebar.divider()
 
-# 季度戰略摺疊選單 (移至此處)
-with st.sidebar.expander("🗺️ 2026 戰略佈局 (操作手冊)", expanded=False):
-    st.markdown("### 💰 資金配置黃金比例")
-    st.info("""
-    * **核心 (50%)**: 🛡️ 市值型 (0050/006208)
-    * **攻擊 (30%)**: 🔥 成長型 (2330/00991A)
-    * **現金 (20%)**: 💰 高息型 (00878/00919)
-    """)
-    st.markdown("### 📅 季度戰術")
+# 1. 每日 SOP (新增!)
+with st.sidebar.expander("📖 每日操作 SOP (極簡版)", expanded=False):
     st.markdown("""
-    * **Q1 (設備先行)**: 關注 00991A，利用 ADR 錯殺佈局。
-    * **Q2 (防禦避險)**: 減碼攻擊部位，轉進高息與市值型。
-    * **Q3 (旺季攻擊)**: 蘋果/AI旺季，加碼主動型 ETF。
-    * **Q4 (汰弱留強)**: 檢視 RS 指標，落後者回流 0050。
+    **1️⃣ 下午 15:30 (選股)**
+    * ✅ **連買**：主力連買 >= 3 天？
+    * ✅ **防線**：股價 > 成本線？
+    * ✅ **強度**：RS 指標 > 0？
+    
+    **2️⃣ 晚上 22:30 (定調)**
+    * 🔥 **ADR > 5%**：過熱，明早不追。
+    * 💎 **ADR < -2%**：錯殺，準備撿便宜。
+    * 🟢 **其他**：正常操作。
+    
+    **3️⃣ 早上 09:05 (執行)**
+    * ⚔️ **買進**：系統顯示「符合進場」。
+    * 🛑 **觀望**：系統顯示「取消交易」。
     """)
-    st.warning("⚠️ **最高指導原則**：ADR 溢價率決定多空，成本線決定進出。")
+
+# 2. 季度戰略
+with st.sidebar.expander("🗺️ 2026 戰略佈局 (長線)", expanded=False):
+    st.markdown("### 💰 資金配置")
+    st.info("核心 50% | 攻擊 30% | 現金 20%")
+    st.markdown("### 📅 季度重點")
+    st.markdown("""
+    * **Q1**: 設備股 (00991A) 先行。
+    * **Q2**: 轉高息 (00919) 避險。
+    * **Q3**: 主動型 (00981A) 攻擊。
+    * **Q4**: 汰弱留強回流 0050。
+    """)
 
 # --- B. 主畫面：ADR 儀表板 ---
 st.markdown("### 🌎 全球戰略風向 (TSM ADR)")
@@ -220,7 +233,6 @@ if not df.empty:
         c3.metric("主力連續動向", con_label, delta="主力進場" if con_days>=3 else "主力撤退", delta_color="normal" if con_days>0 else "inverse")
         c4.metric("RS 強度 (vs 0050)", f"{latest['RS_Index']:.2f}", delta="強勢" if latest['RS_Index']>0 else "弱勢")
         
-        # 整合圖表：價格+成本 & RS 指標
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index[-60:], y=df['Close'].iloc[-60:], name="股價", line=dict(color='#1f77b4', width=3)))
         line_col = '#ff7f0e' if is_high_div else '#d62728'
@@ -229,7 +241,6 @@ if not df.empty:
         fig.update_layout(template="plotly_dark", height=350, margin=dict(t=30, b=20), title="價格 vs 主力成本線")
         st.plotly_chart(fig, use_container_width=True)
         
-        # RS 圖表 (從原 Tab 3 移來)
         fig_rs = go.Figure()
         fig_rs.add_trace(go.Scatter(x=df.index[-90:], y=df['RS_Index'].iloc[-90:], fill='tozeroy', name="RS Index", line=dict(color='yellow')))
         fig_rs.add_hline(y=0, line_dash="dash", line_color="white")
@@ -275,4 +286,4 @@ if not df.empty:
             > * 建議：等待站回成本線且量能放大。
             """)
 
-st.caption("v6.6 側欄戰略版：操作心法常駐側邊，分析流程整合 RS 指標。")
+st.caption("v6.7 終極版：內建每日操作 SOP 與季度戰略地圖。")

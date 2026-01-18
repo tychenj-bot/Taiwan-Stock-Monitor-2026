@@ -7,7 +7,7 @@ from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 
 # --- 1. 系統環境配置 ---
-st.set_page_config(page_title="2026 ADR 戰情系統 v6.2", layout="wide")
+st.set_page_config(page_title="2026 三引擎戰略系統 v6.4 (全配版)", layout="wide")
 
 if "FINMIND_TOKEN" not in st.secrets:
     st.error("❌ 找不到 FINMIND_TOKEN，請檢查 Secrets 設定。")
@@ -45,15 +45,25 @@ class TaiwanStockMonitor2026:
 
     @st.cache_data(ttl=3600)
     def get_strategic_data(_self, stock_id, days=150):
-        # A. 價格數據 (yfinance)
+        # A. 價格與技術指標 (yfinance)
         ticker_yf = f"{stock_id}.TW"
         df = yf.Ticker(ticker_yf).history(period=f"{days}d")
         
-        if df.empty: return pd.DataFrame(), 0, 0, "無數據"
+        if df.empty: return pd.DataFrame(), 0, 0, "無數據", 0, 0, 0
         df.index = df.index.tz_localize(None).normalize()
         df = df[~df.index.duplicated(keep='last')]
 
-        # 估算殖利率
+        # 指標 1: KD (9,3,3)
+        low_min = df['Low'].rolling(9).min()
+        high_max = df['High'].rolling(9).max()
+        df['RSV'] = (df['Close'] - low_min) / (high_max - low_min) * 100
+        df['K'] = df['RSV'].ewm(com=2).mean()
+        
+        # 指標 2: 量比 (Vol Ratio)
+        vol_ma20 = df['Volume'].rolling(20).mean()
+        df['Vol_Ratio'] = df['Volume'] / vol_ma20
+
+        # 指標 3: 殖利率
         try:
             divs = yf.Ticker(ticker_yf).dividends
             if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
@@ -62,7 +72,7 @@ class TaiwanStockMonitor2026:
         except:
             est_yield = 0
 
-        # RS 相對強度
+        # 指標 4: RS 相對強度
         mkt = yf.Ticker("0050.TW").history(period=f"{days}d")
         mkt.index = mkt.index.tz_localize(None).normalize()
         df['RS_Index'] = (df['Close'].pct_change(20) - mkt['Close'].pct_change(20)) * 100
@@ -82,81 +92,92 @@ class TaiwanStockMonitor2026:
 
         df = df.fillna(0)
         
-        # C. 智慧成本線演算法 (VWAP + Fallback)
+        # 指標 5: 籌碼集中度 (Concentration)
+        # 公式：(外資買賣超 + 投信買賣超) / 當日成交量 * 100
+        df['Concentration'] = (df['foreign_net'] + df['investment_net']) / df['Volume'] * 100
+
+        # C. 智慧成本線 (VWAP)
         def calculate_vwap_safe(net_buy_col):
             costs = []
             last_valid = np.nan
             has_data = False
-            
             for i in range(len(df)):
                 win = df.iloc[max(0, i-19) : i+1]
                 buys = win[win[net_buy_col] > 0]
-                
                 if not buys.empty:
                     val = (buys['Close'] * buys[net_buy_col]).sum() / buys[net_buy_col].sum()
                     last_valid = val
                     has_data = True
-                
                 costs.append(last_valid)
             return pd.Series(costs, index=df.index).ffill().bfill(), has_data
 
-        # 計算外資與投信成本
-        f_cost_series, f_has_data = calculate_vwap_safe('foreign_net')
-        i_cost_series, i_has_data = calculate_vwap_safe('investment_net')
+        f_cost, f_has = calculate_vwap_safe('foreign_net')
+        i_cost, i_has = calculate_vwap_safe('investment_net')
         
-        # 存入 DataFrame
-        df['Foreign_Cost'] = f_cost_series
-        df['Invest_Cost'] = i_cost_series
+        df['Foreign_Cost'] = f_cost
+        df['Invest_Cost'] = i_cost
         
-        # 決定最終使用的成本線 (Cost Source)
-        # 邏輯：如果投信有數據就用投信，否則用外資，再沒有就用季線 (SMA60)
-        if i_has_data:
+        # 決定主要防守線與主要法人
+        if i_has and not f_has: # 僅有投信 (高股息)
             used_source = "投信成本"
-        elif f_has_data:
-            used_source = "外資成本 (備援)"
-            df['Invest_Cost'] = df['Foreign_Cost'] # 覆蓋以便統一調用
-        else:
-            used_source = "季線 (SMA60)"
-            df['Invest_Cost'] = df['Close'].rolling(60).mean() # 最終防線
-
-        # 連買天數 (以外資為主，若為高息股可看投信)
-        target_net = df['investment_net'] if 'Invest' in used_source and not '備援' in used_source else df['foreign_net']
-        net_list = target_net.tolist()
+            main_net = df['investment_net']
+        elif not i_has and f_has: # 僅有外資
+            used_source = "外資成本"
+            main_net = df['foreign_net']
+        else: # 兩者皆有或皆無，預設外資 (除非是高股息ETF在外部邏輯會覆蓋)
+            used_source = "外資成本" 
+            main_net = df['foreign_net']
+        
+        # 指標 6: 連續買賣超天數 (Consecutive Days)
+        # 正值=連買, 負值=連賣
+        net_list = main_net.tolist()
         consecutive = 0
-        for val in reversed(net_list):
-            if val > 0: consecutive += 1
-            elif val < 0: break
+        if net_list:
+            last_val = net_list[-1]
+            if last_val > 0: # 檢查連買
+                for val in reversed(net_list):
+                    if val > 0: consecutive += 1
+                    else: break
+            elif last_val < 0: # 檢查連賣
+                for val in reversed(net_list):
+                    if val < 0: consecutive -= 1
+                    else: break
+        
+        # 回傳最新數據
+        k_val = df['K'].iloc[-1]
+        vol_r = df['Vol_Ratio'].iloc[-1]
+        conc_val = df['Concentration'].iloc[-1]
             
-        return df, consecutive, est_yield, used_source
+        return df, consecutive, est_yield, used_source, k_val, vol_r, conc_val
 
 # --- 3. UI 介面 ---
-st.title("🦅 2026 ADR 戰情系統 v6.2")
+st.title("🦅 2026 三引擎戰略系統 v6.4 (全配版)")
 
 monitor = TaiwanStockMonitor2026(FINMIND_TOKEN)
 
-# ADR 儀表板
+# 1. ADR 儀表板
 st.markdown("### 🌎 全球戰略風向 (TSM ADR)")
 adr_premium, adr_price = monitor.get_global_tsm_signal()
-col_m, col_i = st.columns([1, 2])
-with col_m:
-    d_col = "inverse" if adr_premium > 5 else ("off" if adr_premium < 0 else "normal")
-    st.metric("TSM ADR 溢價率", f"{adr_premium:.2f}%", f"美股收盤 ${adr_price:.2f}", delta_color=d_col)
-with col_i:
+c_m, c_i = st.columns([1, 2])
+with c_m:
+    d_c = "inverse" if adr_premium > 5 else ("off" if adr_premium < 0 else "normal")
+    st.metric("TSM ADR 溢價率", f"{adr_premium:.2f}%", f"美股 ${adr_price:.2f}", delta_color=d_c)
+with c_i:
     if adr_premium > 5: st.warning("🔥 **過熱**：嚴禁追價，留意開高走低。")
     elif adr_premium < -2: st.error("💎 **校正**：負溢價錯殺，留意開低買點。")
-    else: st.info("🟢 **正常**：回歸個股籌碼判斷。")
+    else: st.info("🟢 **正常**：回歸個股籌碼與技術面判斷。")
 
 st.divider()
 
-# 標的選擇
-st.markdown("### 🔍 標的驗證 (ETF 籌碼優化版)")
+# 2. 標的選擇
+st.markdown("### 🔍 標的驗證 (價・量・籌・勢)")
 targets = {
     "🔥 引擎一：成長進攻": {
         "台積電 (2330)": "2330",
         "中信上游半導體 (00991A)": "00991A",
         "統一主動 (00981A)": "00981A", 
         "群益精選 (00982A)": "00982A",
-        "復華台灣好收益 (00980A)": "00980A"
+        "復華好收益 (00980A)": "00980A"
     },
     "🛡️ 引擎二：市值防禦": {
         "元大台灣50 (0050)": "0050", 
@@ -176,55 +197,89 @@ with c1: cat = st.selectbox("引擎分類", list(targets.keys()))
 with c2: name = st.selectbox("監控標的", list(targets[cat].keys()))
 stock_id = targets[cat][name]
 
-df, con_buy, yield_rate, source_name = monitor.get_strategic_data(stock_id)
+df, con_days, yield_rate, source_name, k_val, vol_r, conc_val = monitor.get_strategic_data(stock_id)
 
 if not df.empty:
     latest = df.iloc[-1]
     
-    # 決定顯示哪條線
+    # 決定成本線
     is_high_div = "高股息" in cat or "穩健領息" in cat
-    # 若為高息股，優先用計算出來的 Invest_Cost (可能已經備援切換過)
-    # 若為成長股，優先用 Foreign_Cost
-    if is_high_div:
+    # 若為高息股且投信有數據，優先用投信
+    if is_high_div and "投信" in source_name:
         main_cost = latest['Invest_Cost']
-        cost_label = source_name 
-    else:
+        cost_label = "投信成本"
+    elif is_high_div: # 高息但無投信數據，用外資備援
+        main_cost = latest['Foreign_Cost']
+        cost_label = "外資成本 (備援)"
+    else: # 成長/市值，優先用外資
         main_cost = latest['Foreign_Cost']
         cost_label = "外資成本"
 
     bias = (latest['Close'] / main_cost - 1) * 100
     
-    # 數據看板
+    # --- 關鍵指標儀表板 (重新排列) ---
+    # Row 1: 價格與技術面
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric(f"參考：{cost_label}", f"${main_cost:.1f}")
-    k2.metric("參考：籌碼乖離", f"{bias:.2f}%")
-    k3.metric("參考：RS 強度", f"{latest['RS_Index']:.2f}")
-    k4.metric("參考：殖利率", f"{yield_rate:.2f}%")
+    k1.metric("當前股價", f"${latest['Close']:.2f}")
+    k2.metric("量比 (攻擊力)", f"{vol_r:.2f}倍", delta="攻擊" if vol_r > 1.2 else "溫和")
+    k3.metric("KD 值 (位階)", f"{k_val:.0f}", delta="過熱" if k_val > 80 else "低檔", delta_color="inverse")
+    k4.metric("RS 強度 (vs 0050)", f"{latest['RS_Index']:.2f}")
 
-    # 戰略建議
-    st.markdown("#### 📝 戰略建議")
+    # Row 2: 籌碼面 (補回關鍵指標)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"{cost_label}", f"${main_cost:.1f}", help="主力 20 日平均持倉成本")
+    c2.metric("籌碼乖離", f"{bias:.2f}%", delta="安全" if bias < 5 else "風險", delta_color="inverse")
+    
+    # 連續買賣超：正數為連買，負數為連賣
+    con_label = f"連買 {con_days} 天" if con_days > 0 else f"連賣 {abs(con_days)} 天"
+    con_delta = "主力進場" if con_days >= 3 else ("主力出貨" if con_days <= -3 else "中性")
+    con_color = "normal" if con_days > 0 else "inverse"
+    c3.metric("主力連續動向", con_label, delta=con_delta, delta_color=con_color)
+    
+    # 籌碼集中度
+    conc_delta = "大戶收集" if conc_val > 5 else ("籌碼渙散" if conc_val < 0 else None)
+    c4.metric("籌碼集中度", f"{conc_val:.2f}%", delta=conc_delta, help="(外資+投信買賣超)/成交量。正值越高代表籌碼越集中。")
+
+    # 綜合戰略判讀
+    st.markdown("#### 📝 最終戰略判讀")
+    
+    # 基準標的
     if stock_id in ["0050", "006208"]:
         st.info("ℹ️ **基準標的**：大盤觀測基準。")
-    elif adr_premium < -1 and con_buy > 0:
-        st.success(f"🎯 **校正機會**：ADR 跌但籌碼支撐，留意買點。")
-    elif bias < 2 and latest['Close'] > main_cost:
-        st.success(f"✅ **順勢佈局**：股價守穩 {cost_label}。")
+    
+    # 1. 賣出訊號 (連賣 + 破線 + 集中度負)
+    elif con_days <= -3 and latest['Close'] < main_cost:
+        st.error(f"🔴 **主力出貨警報**：股價跌破成本線，且主力已{con_label}。籌碼集中度 ({conc_val:.2f}%) 不佳，建議離場。")
+    
+    # 2. 假突破過濾 (漲但沒量/沒籌碼)
+    elif latest['Close'] > main_cost and conc_val < 0 and vol_r < 0.8:
+        st.warning(f"⚠️ **虛漲背離**：股價上漲但籌碼集中度為負，且量能不足。小心假突破。")
+        
+    # 3. 買進訊號 (連買 + 守線 + 集中度正)
+    elif con_days >= 3 and bias < 5 and conc_val > 0:
+        st.success(f"🚀 **真金白銀**：主力{con_label}，且籌碼集中度翻正。股價貼近成本線，為穩健買點。")
+    
+    # 4. 校正買點
+    elif adr_premium < -1 and con_days > 0:
+        st.success(f"💎 **校正買點**：ADR 錯殺，但台股主力仍在買方。留意開低後的機會。")
+        
     else:
-        st.warning("⚠️ **觀望/警戒**：無明確訊號。")
+        st.info(f"⚪ **區間震盪**：多空力道均衡，等待進一步訊號。")
 
-    # 圖表
+    # 核心圖表 (雙軸：價格+成本 / 成交量)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df.index[-60:], y=df['Close'].iloc[-60:], name="股價", line=dict(color='#1f77b4', width=3)))
     
     line_col = '#ff7f0e' if is_high_div else '#d62728'
     cost_series = df['Invest_Cost'] if is_high_div else df['Foreign_Cost']
-    
     fig.add_trace(go.Scatter(x=df.index[-60:], y=cost_series.iloc[-60:], name=cost_label, line=dict(color=line_col, dash='dot')))
     
-    fig.update_layout(template="plotly_dark", height=350, margin=dict(t=30, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    fig.add_trace(go.Bar(x=df.index[-60:], y=df['Volume'].iloc[-60:], name="成交量", marker_color='rgba(255, 255, 255, 0.3)', yaxis='y2'))
     
-    if "SMA" in cost_label:
-        st.caption("註：因法人籌碼數據不足，系統已自動切換為「技術面均線」作為防守參考。")
+    fig.update_layout(
+        template="plotly_dark", height=400, margin=dict(t=30, b=20),
+        yaxis2=dict(title="Volume", overlaying='y', side='right', showgrid=False)
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-st.caption("v6.2 修正：針對 00919/00929 導入智慧備援機制 (投信 -> 外資 -> 季線)，確保防守線不中斷。")
+st.caption("v6.4 終極全配版：補回「籌碼集中度」與「主力連賣」偵測，徹底過濾假突破。")

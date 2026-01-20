@@ -7,9 +7,8 @@ from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 
 # --- 1. 系統環境配置 ---
-st.set_page_config(page_title="2026 戰略指揮中心 v9.3", layout="wide")
+st.set_page_config(page_title="2026 戰略指揮中心 v10.0", layout="wide")
 
-# 安全檢查：Token
 if "FINMIND_TOKEN" not in st.secrets:
     st.error("❌ 找不到 FINMIND_TOKEN，請檢查 Secrets 設定。")
     st.stop()
@@ -26,39 +25,52 @@ class TaiwanStockMonitor2026:
         except: pass
 
     @st.cache_data(ttl=300)
-    def get_global_tsm_signal(_self):
-        """全域 TSM ADR 訊號"""
+    def get_global_weather(_self):
+        """置頂區：氣候指標 (ADR + SOX)"""
         try:
             tsm_adr = yf.Ticker("TSM").history(period="5d")
+            sox = yf.Ticker("^SOX").history(period="5d") # 費城半導體
             tsm_tw = yf.Ticker("2330.TW").history(period="5d")
+            
             tsm_adr.index = tsm_adr.index.tz_localize(None).normalize()
+            sox.index = sox.index.tz_localize(None).normalize()
             tsm_tw.index = tsm_tw.index.tz_localize(None).normalize()
-            adr_close = tsm_adr['Close'].iloc[-1]
-            tw_close = tsm_tw['Close'].iloc[-1]
-            fx_rate = 32.5 
-            implied_price = (adr_close * fx_rate) / 5
-            premium = ((implied_price / tw_close) - 1) * 100
-            return premium, adr_close
-        except:
-            return 0, 0
+            
+            adr_c = tsm_adr['Close'].iloc[-1]
+            sox_c = sox['Close'].iloc[-1]
+            sox_p = ((sox_c / sox['Close'].iloc[-2]) - 1) * 100
+            tw_c = tsm_tw['Close'].iloc[-1]
+            
+            premium = (((adr_c * 32.5) / 5) / tw_c - 1) * 100
+            return premium, adr_c, sox_p
+        except: return 0, 0, 0
 
-    def get_morning_brief(self, target_list):
-        """09:00 置頂戰報表格邏輯"""
+    def get_strategic_matrix(self, target_list, adr_premium):
+        """置頂區：進化戰略矩陣"""
         results = []
-        for stock_id, name, engine in target_list:
+        for stock_id, name, engine, driver in target_list:
             try:
                 info = yf.Ticker(f"{stock_id}.TW").fast_info
                 real_open = info.open if info.open else info.last_price
                 df = yf.Ticker(f"{stock_id}.TW").history(period="100d")
                 ma20 = df['Close'].rolling(20).mean().iloc[-1]
-                action = "🟢 買進" if real_open > ma20 else "🔴 觀望"
+                
+                # 進化指令邏輯
+                status = "守穩" if real_open > ma20 else "破線"
+                if adr_premium > 5:
+                    action = "🔴 觀望 (ADR過熱)"
+                elif real_open > ma20:
+                    action = "🟢 積極進攻" if adr_premium > 0 else "🟡 穩健佈局"
+                else:
+                    action = "💎 逢低校正" if adr_premium < -2 else "🔴 取消交易"
+
                 results.append({
-                    "引擎": engine,
-                    "標的": name,
+                    "引擎分類": engine,
+                    "標的名稱": name,
+                    "核心驅動": driver,
                     "今日開盤": f"${real_open:.1f}",
-                    "防守月線": f"${ma20:.1f}",
-                    "狀態": "守穩" if real_open > ma20 else "破線",
-                    "戰略指令": action
+                    "狀態": status,
+                    "最終戰略指令": action
                 })
             except: pass
         return pd.DataFrame(results)
@@ -72,7 +84,7 @@ class TaiwanStockMonitor2026:
         df.index = df.index.tz_localize(None).normalize()
         df = df[~df.index.duplicated(keep='last')]
 
-        # 技術指標
+        # 技術面指標
         low_min = df['Low'].rolling(9).min()
         high_max = df['High'].rolling(9).max()
         df['RSV'] = (df['Close'] - low_min) / (high_max - low_min) * 100
@@ -80,19 +92,12 @@ class TaiwanStockMonitor2026:
         vol_ma20 = df['Volume'].rolling(20).mean()
         df['Vol_Ratio'] = df['Volume'] / vol_ma20
 
-        # 殖利率
-        try:
-            divs = yf.Ticker(ticker_yf).dividends
-            if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
-            est_yield = (divs[divs.index > (pd.Timestamp.now() - pd.DateOffset(months=12))].sum() / df['Close'].iloc[-1]) * 100
-        except: est_yield = 0
-
         # RS 強度 (vs 0050)
         mkt = yf.Ticker("0050.TW").history(period=f"{days}d")
         mkt.index = mkt.index.tz_localize(None).normalize()
         df['RS_Index'] = (df['Close'].pct_change(20) - mkt['Close'].pct_change(20)) * 100
 
-        # 籌碼數據
+        # 籌碼面指標
         start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
         try:
             df_chip = _self.api.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start_date)
@@ -107,7 +112,6 @@ class TaiwanStockMonitor2026:
         df = df.fillna(0)
         df['Concentration'] = (df['foreign_net'] + df['investment_net']) / df['Volume'] * 100
 
-        # VWAP 成本線
         def calc_vwap(net_col):
             costs = []
             last = np.nan
@@ -121,7 +125,7 @@ class TaiwanStockMonitor2026:
         df['Foreign_Cost'] = calc_vwap('foreign_net')
         df['Invest_Cost'] = calc_vwap('investment_net')
         
-        # 主力動向天數
+        # 連續動向
         net_list = df['foreign_net'].tolist()
         consecutive = 0
         if net_list:
@@ -133,6 +137,13 @@ class TaiwanStockMonitor2026:
                 for v in reversed(net_list): 
                     if v < 0: consecutive -= 1
                     else: break
+        
+        try:
+            divs = yf.Ticker(ticker_yf).dividends
+            if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
+            est_yield = (divs[divs.index > (pd.Timestamp.now() - pd.DateOffset(months=12))].sum() / df['Close'].iloc[-1]) * 100
+        except: est_yield = 0
+
         return df, consecutive, est_yield, df['K'].iloc[-1], df['Concentration'].iloc[-1], vol_ma20.iloc[-1]
 
     def get_realtime_open(self, stock_id):
@@ -144,7 +155,7 @@ class TaiwanStockMonitor2026:
 # --- 3. UI 介面 ---
 monitor = TaiwanStockMonitor2026(FINMIND_TOKEN)
 
-# (1) 側邊欄：完整 SOP 與 策略
+# A. 側邊欄 (完整保留 SOP 與 策略)
 st.sidebar.header("🦅 2026 戰略控制台")
 targets = {
     "🔥 引擎一：成長進攻": {"台積電 (2330)": "2330", "復華未來50 (00991A)": "00991A", "統一主動 (00981A)": "00981A", "群益精選 (00982A)": "00982A", "復華好收益 (00980A)": "00980A"},
@@ -156,74 +167,77 @@ c_name = st.sidebar.selectbox("監控標的", list(targets[c_cat].keys()))
 stock_id = targets[c_cat][c_name]
 
 st.sidebar.divider()
-with st.sidebar.expander("📖 每日操作 SOP", expanded=True):
+with st.sidebar.expander("📖 每日操作 SOP (完整版)", expanded=True):
     st.markdown("""
     **1️⃣ 15:30 (選股)**
     - 主力連買 >= 3 天 | RS 指標 > 0
     **2️⃣ 22:30 (定調)**
     - ADR > 5% 不追 | ADR < -2% 買
     **3️⃣ 09:05 (執行)**
-    - 開盤 > 成本線：買進
+    - 開盤 > 成本線：依矩陣指令執行
     """)
 with st.sidebar.expander("🗺️ 2026 季度佈局", expanded=False):
-    st.info("Q1 核心：00991A/00981A 競速 Alpha")
-    st.markdown("Q2: 轉進高息避險 | Q3: 加碼主動型攻擊 | Q4: 回防 0050")
+    st.info("Q1: 00991A/00981A 競速 Alpha")
+    st.markdown("Q2: 轉進高息避險 | Q3: 攻旺季 | Q4: 回防 0050")
 
-# (2) 置頂區：ADR 天氣 + 指揮中心表格
-adr_p, adr_v = monitor.get_global_tsm_signal()
-st.metric("🌍 TSM ADR 溢價率 (全域風向)", f"{adr_p:.2f}%", 
-          delta="過熱不追" if adr_p > 5 else ("錯殺機會" if adr_p < -2 else "盤向正常"),
-          delta_color="inverse" if adr_p > 5 else ("off" if adr_p < -2 else "normal"))
+# B. 置頂區 (氣候指標 + 智慧戰略矩陣)
+adr_p, adr_v, sox_p = monitor.get_global_weather()
 
-st.markdown("### ☀️ 09:00 指揮中心戰報")
-leaders = [("00991A", "復華未來50 (主動)", "🔥 成長"), ("0050", "元大台灣50 (市值)", "🛡️ 市值"), ("00878", "國泰永續高股息", "💰 高息")]
-df_brief = monitor.get_morning_brief(leaders)
-if not df_brief.empty:
-    if adr_p > 5: df_brief["戰略指令"] = "🔴 觀望 (ADR過熱)"
-    st.table(df_brief.style.map(lambda x: 'color: green' if '買進' in str(x) else ('color: red' if '觀望' in str(x) else ''), subset=['戰略指令']))
+# (1) 氣候指標
+c1, c2, c3 = st.columns(3)
+c1.metric("🌍 TSM ADR 溢價", f"{adr_p:.2f}%", delta="過熱" if adr_p > 5 else "正常")
+c2.metric("💻 費城半導體 (SOX)", f"{sox_p:.2f}%", delta="成長動能" if sox_p > 0 else "回檔趨勢")
+c3.metric("💰 匯率環境 (模擬)", "台幣升值趨勢", delta="外資流入")
+
+# (2) 智慧戰略矩陣 (包含進化指令)
+st.markdown("### 🦅 09:00 指揮中心：智慧戰略矩陣")
+leaders = [
+    ("00991A", "復華未來50 (主動)", "🔥 成長", "半導體+投信"),
+    ("0050", "元大台灣50 (市值)", "🛡️ 市值", "台幣匯率+外資"),
+    ("00878", "國泰永續高股息", "💰 高息", "美債殖利率+避險")
+]
+df_matrix = monitor.get_strategic_matrix(leaders, adr_p)
+st.table(df_matrix.style.map(lambda x: 'color: #00ff00; font-weight: bold' if '進攻' in str(x) or '佈局' in str(x) else ('color: #ff4b4b; font-weight: bold' if '觀望' in str(x) or '取消' in str(x) else ''), subset=['最終戰略指令']))
 
 st.divider()
 
-# (3) 分頁區：三大時段深度分析
+# C. 核心深度分頁 (保留 09:05 / 15:30 / 22:30)
 tab_open, tab_post, tab_adr = st.tabs(["☀️ 09:05 開盤執行", "📊 15:30 盤後分析", "🌌 22:30 美股觀察"])
 df, con_days, yld, k_val, conc, avg_v = monitor.get_strategic_data(stock_id)
 
 if not df.empty:
     latest = df.iloc[-1]
     is_high_div = "高息" in c_cat or "穩健領息" in c_cat
-    
-    # --- 修正點：分開定義「單點數值」與「繪圖序列」 ---
     cost_series = df['Invest_Cost'] if is_high_div else df['Foreign_Cost']
     main_cost_val = latest['Invest_Cost'] if is_high_div else latest['Foreign_Cost']
     cost_label = "投信成本" if is_high_div else "外資成本"
-    
     real_open, real_last, real_vol = monitor.get_realtime_open(stock_id)
 
     with tab_open:
-        st.subheader(f"⚔️ {c_name} 開盤指令決斷")
+        st.subheader(f"⚔️ {c_name} 指令執行細節")
         m1, m2, m3 = st.columns(3)
         m1.metric("今日開盤", f"${real_open:.2f}")
         m2.metric("主力防線", f"${main_cost_val:.1f}")
-        m3.metric("狀態", "守穩" if real_open > main_cost_val else "破線", 
-                  delta_color="normal" if real_open > main_cost_val else "inverse")
-        if real_open > main_cost_val: st.success(f"✅ 符合進場條件，守穩 {cost_label}。")
-        else: st.error(f"🛑 跌破 {cost_label} 防線，取消交易。")
+        m3.metric("開盤狀態", "守穩" if real_open > main_cost_val else "破線")
+        if real_open > main_cost_val: st.success(f"✅ 符合守穩條件，參考上方矩陣指令執行。")
+        else: st.error(f"🛑 跌破關鍵防線，取消交易或逢低校正。")
 
     with tab_post:
-        st.subheader(f"📊 {c_name} 深度籌碼與強度")
+        st.subheader(f"📊 {c_name} 深度指標")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("RS 強度", f"{latest['RS_Index']:.2f}", delta="強勢" if latest['RS_Index']>0 else "弱勢")
-        c2.metric("主力連動", f"{con_days}天")
+        c1.metric("RS 相對強度", f"{latest['RS_Index']:.2f}", delta="強勢" if latest['RS_Index'] > 0 else "弱勢")
+        c2.metric("主力連續動向", f"{con_days} 天")
         c3.metric("籌碼集中度", f"{conc:.2f}%")
-        c4.metric("乖離率", f"{(real_last/main_cost_val-1)*100:.2f}%")
+        c4.metric("殖利率 (預估)", f"{yld:.2f}%")
 
+        # 圖表：價格與成本線
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index[-60:], y=df['Close'].iloc[-60:], name="股價", line=dict(width=3)))
-        # 使用修正後的序列進行繪圖
         fig.add_trace(go.Scatter(x=df.index[-60:], y=cost_series.iloc[-60:], name=cost_label, line=dict(dash='dot', color='orange')))
         fig.update_layout(template="plotly_dark", height=300, margin=dict(t=30, b=20))
         st.plotly_chart(fig, use_container_width=True)
         
+        # RS 強度圖
         fig_rs = go.Figure()
         fig_rs.add_trace(go.Scatter(x=df.index[-90:], y=df['RS_Index'].iloc[-90:], fill='tozeroy', name="RS Index"))
         fig_rs.add_hline(y=0, line_dash="dash")
@@ -233,8 +247,7 @@ if not df.empty:
         st.subheader("🌌 全球連動與位階校正")
         k1, k2, k3 = st.columns(3)
         k1.metric("ADR 溢價", f"{adr_p:.2f}%")
-        k2.metric("KD 位階", f"{k_val:.1f}")
-        k3.metric("預估殖利率", f"{yld:.2f}%")
-        st.info("💡 提醒：若 ADR 大跌但籌碼連買，隔日開低即為『校正買點』。")
+        k2.metric("KD K值", f"{k_val:.1f}")
+        k3.metric("SOX 漲跌幅", f"{sox_p:.2f}%")
 
-st.caption("v9.3 終極整合版：置頂戰報 + 深度分頁 + 側欄完整 SOP。")
+st.caption("v10.0 旗艦指揮官版：智慧戰略矩陣 + 深度分頁 + 氣候指標全數到位。")

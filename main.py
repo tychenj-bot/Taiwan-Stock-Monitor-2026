@@ -8,33 +8,33 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
-# C. 系統規格化配置 (此處可自由增減代號)
+# C. 規格化配置 (標的名稱已附註股號)
 # ==========================================
 SYSTEM_CONFIG = {
-    "VERSION": "v12.6 全標的一覽版",
-    "ADR_THRESHOLD": 5.0,  # ADR 溢價警戒線 (%)
+    "VERSION": "v12.7 資訊強化版",
+    "ADR_THRESHOLD": 5.0,  
     "MA_PERIOD": 20,
     "CHIP_DAYS": 150,
     "STOCKS": {
         "🔥 成長進攻": {
-            "台積電": "2330", 
-            "鴻海": "2317", 
-            "聯發科": "2454", 
-            "復華50": "00991A", 
-            "統一主動": "00981A"
+            "台積電 (2330)": "2330", 
+            "鴻海 (2317)": "2317", 
+            "聯發科 (2454)": "2454", 
+            "復華50 (00991A)": "00991A", 
+            "統一主動 (00981A)": "00981A"
         },
         "🛡️ 市值防禦": {
-            "元大50": "0050", 
-            "富邦50": "006208", 
-            "國泰50": "00922",
-            "台達電": "2308", 
-            "台泥": "1101"
+            "元大50 (0050)": "0050", 
+            "富邦50 (006208)": "006208", 
+            "國泰50 (00922)": "00922",
+            "台達電 (2308)": "2308", 
+            "台泥 (1101)": "1101"
         },
         "💰 穩健領息": {
-            "元大高息": "0056", 
-            "國泰高息": "00878", 
-            "群益高息": "00919", 
-            "復華優息": "00929"
+            "元大高息 (0056)": "0056", 
+            "國泰高息 (00878)": "00878", 
+            "群益高息 (00919)": "00919", 
+            "復華優息 (00929)": "00929"
         }
     }
 }
@@ -47,7 +47,7 @@ if "FINMIND_TOKEN" not in st.secrets:
     st.stop()
 FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
 
-# --- 2. 核心運算引擎 (修復 NameError 並優化並行效率) ---
+# --- 2. 核心運算引擎 (效能與數據穩定版) ---
 class TaiwanStockCommander2026:
     def __init__(self, token):
         self.api = DataLoader()
@@ -58,7 +58,7 @@ class TaiwanStockCommander2026:
 
     @st.cache_data(ttl=300)
     def get_global_weather(_self):
-        """抓取全球氣候指標 (含即時匯率校正)"""
+        """抓取全球氣候指標 (動態匯率)"""
         try:
             tsm_adr = yf.Ticker("TSM").history(period="2d")
             sox = yf.Ticker("^SOX").history(period="2d")
@@ -81,7 +81,6 @@ class TaiwanStockCommander2026:
         if df.empty: return pd.DataFrame(), 0, 0, 0
         df.index = df.index.tz_localize(None).normalize()
 
-        # RS 相對強度 (與市場基準對齊)
         try:
             mkt = yf.Ticker("0050.TW").history(period=f"{days}d")
             mkt.index = mkt.index.tz_localize(None).normalize()
@@ -89,7 +88,6 @@ class TaiwanStockCommander2026:
         except:
             df['RS_Index'] = 0
 
-        # 籌碼與成本計算 (VWAP)
         start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
         try:
             df_chip = _self.api.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start_date)
@@ -116,13 +114,12 @@ class TaiwanStockCommander2026:
         return df, df['Foreign_Cost'].iloc[-1], df['Invest_Cost'].iloc[-1], df['RS_Index'].iloc[-1]
 
     def get_realtime_status(self, stock_id):
-        """降低 API 調用頻率以提升 Poco F3 載入速度"""
         try:
             info = yf.Ticker(f"{stock_id}.TW").fast_info
             return info.open if info.open else info.last_price
         except: return 0
 
-# --- 3. UI 介面實作 ---
+# --- 3. UI 介面 ---
 commander = TaiwanStockCommander2026(FINMIND_TOKEN)
 
 # 側邊欄控制
@@ -135,13 +132,15 @@ c_cat = st.sidebar.selectbox("引擎分類", list(SYSTEM_CONFIG["STOCKS"].keys()
 c_name = st.sidebar.selectbox("監控標的", list(SYSTEM_CONFIG["STOCKS"][c_cat].keys()))
 stock_id = SYSTEM_CONFIG["STOCKS"][c_cat][c_name]
 
-# 置頂氣候看板 (氣候定調)
+# 置頂氣候看板
 adr_p, fx_now, sox_p = commander.get_global_weather()
 st.markdown(f"### 🌍 全球氣候看板 (ADR: **{adr_p:.1f}%** | USD/TWD: **{fx_now:.2f}**)")
 
-# 三引擎視覺卡片 (快速掃描)
+# 三引擎視覺卡片 (標的已附註股號)
 st.divider()
-core_list = [("🔥 成長", "00991A", "復華未來50"), ("🛡️ 市值", "0050", "元大台灣50"), ("💰 高息", "00878", "國泰高息")]
+core_list = [("🔥 成長", "00991A", "復華未來50 (00991A)"), 
+             ("🛡️ 市值", "0050", "元大台灣50 (0050)"), 
+             ("💰 高息", "00878", "國泰高息 (00878)")]
 cols = st.columns(3)
 for i, (tag, sid, sname) in enumerate(core_list):
     with cols[i]:
@@ -153,7 +152,7 @@ for i, (tag, sid, sname) in enumerate(core_list):
         elif price_c > target_cost: st.success("🟢 守穩進攻")
         else: st.error("🔴 破線觀望")
 
-# 📊 全標的一覽矩陣 (並行處理優化版 - 修復位置問題)
+# 📊 全標的一覽矩陣 (資訊強化版)
 with st.expander(f"📊 全標的戰略矩陣 (包含 {c_name} 等 14 檔)", expanded=False):
     all_targets = []
     for eng, stocks in SYSTEM_CONFIG["STOCKS"].items():
@@ -164,7 +163,7 @@ with st.expander(f"📊 全標的戰略矩陣 (包含 {c_name} 等 14 檔)", exp
         df_m, fc, ic, rs = commander.get_strategic_data(sid)
         price = commander.get_realtime_status(sid)
         c = ic if "高息" in eng else fc
-        return {"引擎": eng[0:3], "標的": n, "現價": f"${price:.1f}", "法人成本": f"${c:.1f}", "狀態": "🟢 守穩" if price > c else "🔴 破線"}
+        return {"引擎": eng[0:3], "標的名稱 (股號)": n, "現價": f"${price:.1f}", "法人成本": f"${c:.1f}", "狀態": "🟢 守穩" if price > c else "🔴 破線"}
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         matrix_df = pd.DataFrame(list(executor.map(fetch_row, all_targets)))
@@ -172,37 +171,37 @@ with st.expander(f"📊 全標的戰略矩陣 (包含 {c_name} 等 14 檔)", exp
 
 st.divider()
 
-# 分頁顯示：決策與深度分析
+# 分頁顯示
 tab_open, tab_post, tab_adr = st.tabs(["☀️ 09:05 決斷", "📊 15:30 盤後", "🌌 22:30 美股"])
 df_main, f_m, i_m, rs_m = commander.get_strategic_data(stock_id)
 p_main = commander.get_realtime_status(stock_id)
 m_cost = i_m if "高息" in c_cat else f_m
 
 with tab_open:
-    st.subheader(f"⚔️ {c_name} 指令與建議")
+    st.subheader(f"⚔️ {c_name} 指令與金流建議")
     k1, k2 = st.columns([1, 2])
     with k1:
-        st.metric("現價", f"${p_main:.2f}", delta=f"${p_main - m_cost:.1f}")
-        st.write("狀態：" + ("✅ 守穩" if p_main > m_cost else "🛑 破線"))
+        st.metric("目前價格", f"${p_main:.2f}", delta=f"${p_main - m_cost:.1f}")
+        st.write("判定：" + ("✅ 守穩" if p_main > m_cost else "🛑 破線"))
     with k2:
-        budget = st.number_input("今日預算 (NTD)", value=100000, step=10000)
+        budget = st.number_input("今日投資預算 (NTD)", value=100000, step=10000)
         total_s = int(budget / p_main) if p_main > 0 else 0
-        st.info(f"建議購買：**{total_s // 1000}** 張 又 **{total_s % 1000}** 股")
+        st.info(f"建議下單量：**{total_s // 1000}** 張 又 **{total_s % 1000}** 股")
 
 with tab_post:
-    st.subheader(f"📊 {c_name} RS 強度與法人成本分析")
-    st.metric("RS 指數 (vs 0050)", f"{rs_m:.1f}", delta="強勢" if rs_m > 0 else "弱勢")
+    st.subheader(f"📊 {c_name} 深度指標分析")
+    st.metric("RS 相對強度指數", f"{rs_m:.1f}", delta="強勢" if rs_m > 0 else "弱勢")
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_main.index[-90:], y=df_main['Close'].iloc[-90:], name="價格"))
     c_series = df_main['Invest_Cost'] if "高息" in c_cat else df_main['Foreign_Cost']
-    fig.add_trace(go.Scatter(x=df_main.index[-90:], y=c_series.iloc[-90:], name="法人成本線", line=dict(dash='dot')))
+    fig.add_trace(go.Scatter(x=df_main.index[-90:], y=c_series.iloc[-90:], name="法人防護線 (VWAP)", line=dict(dash='dot')))
     fig.update_layout(template="plotly_dark", height=300)
     st.plotly_chart(fig, use_container_width=True)
 
 with tab_adr:
-    st.subheader("🌌 全球連動位階")
-    st.metric("ADR 溢價率 (即時匯率)", f"{adr_p:.2f}%")
+    st.subheader("🌌 全球市場校正")
+    st.metric("TSM ADR 溢價率 (動態匯率)", f"{adr_p:.2f}%")
     st.metric("即時匯率 (USD/TWD)", f"{fx_now:.2f}")
 
-st.caption(f"系統規格：{SYSTEM_CONFIG['VERSION']} | 以法人成本線 (VWAP) 為核心判定標準")
+st.caption(f"系統規格：{SYSTEM_CONFIG['VERSION']} | 以法人成本線為核心判定標準")

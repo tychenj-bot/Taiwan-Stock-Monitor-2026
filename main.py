@@ -8,26 +8,27 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
-# C. 系統規格化配置 (在此處增加任何您想監控的代號)
+# C. 系統規格化配置 (在此處快速增加標的)
 # ==========================================
 SYSTEM_CONFIG = {
-    "VERSION": "v12.4 標的擴充版",
+    "VERSION": "v12.5 全標的擴算版",
     "ADR_THRESHOLD": 5.0,  # ADR 溢價警戒線 (%)
     "MA_PERIOD": 20,
-    "CHIP_DAYS": 150,      # 籌碼追蹤天數
+    "CHIP_DAYS": 150,
     "STOCKS": {
         "🔥 成長進攻": {
             "台積電": "2330", 
+            "鴻海": "2317",      # <-- 新增
+            "聯發科": "2454",    # <-- 新增
             "復華50": "00991A", 
-            "統一主動": "00981A", 
-            "群益精選": "00982A", 
-            "復華好收益": "00980A"
+            "統一主動": "00981A"
         },
         "🛡️ 市值防禦": {
             "元大50": "0050", 
             "富邦50": "006208", 
             "國泰50": "00922",
-            "台泥": "1101"  # <-- 根據您的偏好新增
+            "台達電": "2308",    # <-- 新增
+            "台泥": "1101"       #
         },
         "💰 穩健領息": {
             "元大高息": "0056", 
@@ -39,14 +40,14 @@ SYSTEM_CONFIG = {
 }
 
 # --- 1. 系統環境配置 ---
-st.set_page_config(page_title=f"2026 戰略指揮中心 {SYSTEM_CONFIG['VERSION']}", layout="wide")
+st.set_page_config(page_title=f"戰略指揮中心 {SYSTEM_CONFIG['VERSION']}", layout="wide")
 
 if "FINMIND_TOKEN" not in st.secrets:
     st.error("❌ 找不到 FINMIND_TOKEN，請檢查 Secrets 設定。")
     st.stop()
 FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
 
-# --- 2. 核心運算引擎 (A. 並行效能與數據對齊) ---
+# --- 2. 核心運算引擎 (效能並行優化) ---
 class TaiwanStockCommander2026:
     def __init__(self, token):
         self.api = DataLoader()
@@ -57,7 +58,7 @@ class TaiwanStockCommander2026:
 
     @st.cache_data(ttl=300)
     def get_global_weather(_self):
-        """抓取全球氣候指標 (含即時匯率)"""
+        """抓取全球氣候指標 (動態匯率校正)"""
         try:
             tsm_adr = yf.Ticker("TSM").history(period="2d")
             sox = yf.Ticker("^SOX").history(period="2d")
@@ -68,20 +69,19 @@ class TaiwanStockCommander2026:
             adr_c = tsm_adr['Close'].iloc[-1]
             sox_p = ((sox['Close'].iloc[-1] / sox['Close'].iloc[-2]) - 1) * 100
             tw_c = tsm_tw['Close'].iloc[-1]
-            # 溢價公式: ((ADR*匯率/5)/台股價 - 1) * 100
+            # ADR 溢價公式:
             premium = (((adr_c * fx) / 5) / tw_c - 1) * 100
             return premium, fx, sox_p
         except: return 0, 32.5, 0
 
     @st.cache_data(ttl=3600)
     def get_strategic_data(_self, stock_id):
-        """深度指標運算 (數據對齊修復)"""
+        """深度指標與法人成本計算 (Index 對齊防錯)"""
         days = SYSTEM_CONFIG["CHIP_DAYS"]
         df = yf.Ticker(f"{stock_id}.TW").history(period=f"{days}d")
         if df.empty: return pd.DataFrame(), 0, 0, 0
         df.index = df.index.tz_localize(None).normalize()
 
-        # RS 相對強度對齊 (vs 0050)
         try:
             mkt = yf.Ticker("0050.TW").history(period=f"{days}d")
             mkt.index = mkt.index.tz_localize(None).normalize()
@@ -89,7 +89,6 @@ class TaiwanStockCommander2026:
         except:
             df['RS_Index'] = 0
 
-        # 籌碼面邏輯
         start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
         try:
             df_chip = _self.api.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start_date)
@@ -113,7 +112,6 @@ class TaiwanStockCommander2026:
 
         df['Foreign_Cost'] = calc_vwap('foreign_net')
         df['Invest_Cost'] = calc_vwap('investment_net')
-        
         return df, df['Foreign_Cost'].iloc[-1], df['Invest_Cost'].iloc[-1], df['RS_Index'].iloc[-1]
 
     def get_realtime_status(self, stock_id):
@@ -122,10 +120,9 @@ class TaiwanStockCommander2026:
             return info.open if info.open else info.last_price
         except: return 0
 
-# --- 3. UI 介面實作 ---
+# --- 3. UI 渲染 ---
 commander = TaiwanStockCommander2026(FINMIND_TOKEN)
 
-# 側邊欄控制
 if st.sidebar.button("🔄 核心數據強制刷新"):
     st.cache_data.clear()
     st.rerun()
@@ -135,9 +132,9 @@ c_cat = st.sidebar.selectbox("引擎分類", list(SYSTEM_CONFIG["STOCKS"].keys()
 c_name = st.sidebar.selectbox("監控標的", list(SYSTEM_CONFIG["STOCKS"][c_cat].keys()))
 stock_id = SYSTEM_CONFIG["STOCKS"][c_cat][c_name]
 
-# 置頂全球氣候
+# 置頂看板
 adr_p, fx_now, sox_p = commander.get_global_weather()
-st.markdown(f"### 🌍 全球氣候看板 (ADR: **{adr_p:.1f}%** | USD/TWD: **{fx_now:.2f}**)")
+st.markdown(f"### 🌍 全球氣候儀表板 (ADR: **{adr_p:.1f}%** | USD/TWD: **{fx_now:.2f}**)")
 
 # 三引擎視覺卡片
 st.divider()
@@ -153,8 +150,8 @@ for i, (tag, sid, sname) in enumerate(core_list):
         elif price_c > target_cost: st.success("🟢 守穩進攻")
         else: st.error("🔴 破線觀望")
 
-# 全標的一覽矩陣 (含新增標的)
-with st.expander(f"📊 全標的一覽矩陣 (包含 {c_name} 等 13 檔標的)", expanded=False):
+# 📊 全標的一覽矩陣 (並行優化版)
+with st.expander(f"📊 全標的戰略矩陣 (包含 {c_name} 等多檔標的)", expanded=False):
     all_targets = []
     for eng, stocks in SYSTEM_CONFIG["STOCKS"].items():
         for n, sid in stocks.items(): all_targets.append((eng, n, sid))
@@ -172,17 +169,17 @@ with st.expander(f"📊 全標的一覽矩陣 (包含 {c_name} 等 13 檔標的)
 
 st.divider()
 
-# 分頁決策系統
+# 分頁顯示
 tab_open, tab_post, tab_adr = st.tabs(["☀️ 09:05 決斷", "📊 15:30 盤後", "🌌 22:30 美股"])
 df_main, f_m, i_m, rs_m = commander.get_strategic_data(stock_id)
 p_main = commander.get_realtime_status(stock_id)
 m_cost = i_m if "高息" in c_cat else f_m
 
 with tab_open:
-    st.subheader(f"⚔️ {c_name} 指令與金流建議")
+    st.subheader(f"⚔️ {c_name} 決斷與金流建議")
     k1, k2 = st.columns([1, 2])
     with k1:
-        st.metric("現價", f"${p_main:.2f}", delta=f"${p_main - m_cost:.1f}")
+        st.metric("當前價", f"${p_main:.2f}", delta=f"${p_main - m_cost:.1f}")
         st.write("狀態：" + ("✅ 守穩" if p_main > m_cost else "🛑 破線"))
     with k2:
         budget = st.number_input("今日預算 (NTD)", value=100000, step=10000)
@@ -190,7 +187,7 @@ with tab_open:
         st.info(f"建議購買：**{total_s // 1000}** 張 又 **{total_s % 1000}** 股")
 
 with tab_post:
-    st.subheader(f"📊 {c_name} RS 強度與成本分佈")
+    st.subheader(f"📊 {c_name} RS 強度與法人成本分析")
     st.metric("RS 指數 (vs 0050)", f"{rs_m:.1f}", delta="強勢" if rs_m > 0 else "弱勢")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_main.index[-60:], y=df_main['Close'].iloc[-60:], name="價格"))
@@ -198,10 +195,12 @@ with tab_post:
     fig.add_trace(go.Scatter(x=df_main.index[-60:], y=c_series.iloc[-60:], name="法人成本線", line=dict(dash='dot')))
     fig.update_layout(template="plotly_dark", height=300, margin=dict(t=20, b=20))
     st.plotly_chart(fig, use_container_width=True)
+    
+[attachment_0](attachment)
 
 with tab_adr:
-    st.subheader("🌌 全球連動資訊")
-    st.metric("ADR 溢價率 (動態匯率)", f"{adr_p:.2f}%")
-    st.metric("即時台幣匯率", f"{fx_now:.2f}")
+    st.subheader("🌌 全球連動與位階校正")
+    st.metric("ADR 溢價率 (即時匯率)", f"{adr_p:.2f}%")
+    st.metric("即時匯率 (USD/TWD)", f"{fx_now:.2f}")
 
 st.caption(f"系統規格：{SYSTEM_CONFIG['VERSION']} | 核心判定：法人成本線 (VWAP)")
